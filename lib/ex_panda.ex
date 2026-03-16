@@ -69,8 +69,12 @@ defmodule ExPanda do
 
     case Code.string_to_quoted(source, parse_opts) do
       {:ok, ast} ->
-        file = Keyword.get(opts, :file, "nofile")
-        opts = Keyword.put(opts, :file, file)
+        opts =
+          Keyword.update(opts, :file, "nofile", fn
+            <<_::utf8, _::binary>> = file -> file
+            _ -> "nofile"
+          end)
+
         expand(ast, opts)
 
       {:error, {meta, message, token}} ->
@@ -119,8 +123,7 @@ defmodule ExPanda do
   """
   @spec expand(Macro.t(), keyword()) :: {:ok, Macro.t()} | {:error, term()}
   def expand(ast, opts \\ []) do
-    env = build_env(opts)
-    {expanded, _env} = Walker.walk(ast, env)
+    {expanded, _env} = Walker.walk(ast, build_env(opts))
     {:ok, expanded}
   rescue
     e -> {:error, "Expansion failed: #{Exception.message(e)}"}
@@ -148,14 +151,71 @@ defmodule ExPanda do
     e -> {:error, "Expansion failed: #{Exception.message(e)}"}
   end
 
+  @doc """
+  Expand all macros and return formatted Elixir code.
+
+  Accepts either a source code string or a pre-parsed AST.
+  The result is formatted with `Code.format_string!/2`, preserving
+  whitespace in docstrings.
+
+  ## Options
+
+  When given a string, accepts the same options as `expand_string/2`.
+  When given an AST, accepts the same options as `expand/2`.
+  Additionally:
+
+    * `:format` - Options passed to `Code.format_string!/2`.
+      Defaults to `[]`.
+
+  ## Examples
+
+      iex> {:ok, code} = ExPanda.expand_to_string("unless true, do: :never")
+      iex> code =~ "case"
+      true
+
+      iex> {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
+      iex> {:ok, code} = ExPanda.expand_to_string(ast)
+      iex> code =~ "String.Chars.to_string"
+      true
+  """
+  @spec expand_to_string(String.t() | Macro.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def expand_to_string(input, opts \\ [])
+
+  def expand_to_string(source, opts) when is_binary(source) do
+    {format_opts, expand_opts} = Keyword.pop(opts, :format, [])
+
+    with {:ok, ast} <- expand_string(source, expand_opts) do
+      ast_to_formatted_string(ast, format_opts)
+    end
+  rescue
+    e -> {:error, "Formatting failed: #{Exception.message(e)}"}
+  end
+
+  def expand_to_string(ast, opts) do
+    {format_opts, expand_opts} = Keyword.pop(opts, :format, [])
+
+    with {:ok, expanded} <- expand(ast, expand_opts) do
+      ast_to_formatted_string(expanded, format_opts)
+    end
+  rescue
+    e -> {:error, "Formatting failed: #{Exception.message(e)}"}
+  end
+
   # --- Private ---
 
+  defp ast_to_formatted_string(ast, format_opts) do
+    code =
+      ast
+      |> Macro.to_string()
+      |> Code.format_string!(format_opts)
+      |> IO.iodata_to_binary()
+
+    {:ok, code}
+  end
+
   defp build_env(opts) do
-    env =
-      case Keyword.get(opts, :env) do
-        nil -> EnvManager.new_env()
-        custom_env -> custom_env
-      end
+    env = with nil <- Keyword.get(opts, :env), do: EnvManager.new_env()
 
     case Keyword.get(opts, :file) do
       nil -> env

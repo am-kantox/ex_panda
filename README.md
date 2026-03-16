@@ -68,6 +68,20 @@ end
 # => {{:., _, [String.Chars, :to_string]}, _, [1]}
 ```
 
+### Expanding to Formatted Source Code
+
+To get back formatted Elixir source instead of AST, use `expand_to_string/2`.
+It accepts both source strings and pre-parsed AST:
+
+```elixir
+{:ok, code} = ExPanda.expand_to_string("1 |> to_string() |> String.upcase()")
+# => "String.upcase(String.Chars.to_string(1))"
+
+{:ok, ast} = Code.string_to_quoted("unless true, do: :never")
+{:ok, code} = ExPanda.expand_to_string(ast)
+# => "case true do\n  x when x in [false, nil] ->\n    :never\n  _ ->\n    nil\nend"
+```
+
 ### Expanding with a Custom Environment
 
 When running inside a Mix project where all dependencies are compiled,
@@ -76,6 +90,24 @@ Ecto schemas, Phoenix macros) are also expanded:
 
 ```elixir
 {:ok, expanded, _final_env} = ExPanda.expand(ast, __ENV__, [])
+```
+
+## `use` Expansion
+
+`use GenServer` and similar `use` directives are expanded by calling the
+target module's `MACRO-__using__/2` function directly, bypassing the
+standard macro dispatch that requires a compile-time module table.
+This means `use` works inside `defmodule` even without full compilation:
+
+```elixir
+{:ok, expanded} = ExPanda.expand_string("""
+defmodule MyServer do
+  use GenServer
+end
+""")
+
+# The output contains the expanded @behaviour, def child_spec, etc.
+# with no @unexpanded markers.
 ```
 
 ## Structural Preservation
@@ -125,8 +157,12 @@ ExPanda combines two expansion strategies:
    expansion within function bodies.
 
 2. **`Macro.expand/2`** (fallback) -- the public API. Used as a fallback when
-   the internal engine fails (e.g., undefined variables) and for expanding
-   `use` directives at the module level.
+   the internal engine fails (e.g., undefined variables).
+
+3. **Direct `MACRO-__using__/2` call** -- for `use` directives, the target
+   module's `__using__` macro is called directly, bypassing the compiler
+   dispatch that requires an ETS module table. This enables `use GenServer`
+   and similar expansions inside `defmodule` without full compilation.
 
 The Walker module implements a recursive top-down traversal that threads a
 `Macro.Env` struct through the AST, updating it as directives are encountered:

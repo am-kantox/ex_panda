@@ -1,6 +1,8 @@
 defmodule ExPandaTest do
   use ExUnit.Case, async: true
 
+  doctest ExPanda
+
   describe "expand_string/2" do
     test "expands unless to case" do
       {:ok, expanded} = ExPanda.expand_string("unless true, do: :never")
@@ -102,9 +104,7 @@ defmodule ExPandaTest do
   end
 
   describe "unexpanded marker" do
-    test "use NonExistentModule expands to require + __using__" do
-      # `use` is a Kernel macro, it always expands even if the target module
-      # doesn't exist. The expansion produces `require Mod; Mod.__using__([])`.
+    test "use NonExistentModule gets @unexpanded marker" do
       code = """
       defmodule Foo do
         use NonExistentModule
@@ -113,8 +113,10 @@ defmodule ExPandaTest do
 
       {:ok, expanded} = ExPanda.expand_string(code)
       assert {:defmodule, _, [_, [do: body]]} = expanded
-      # The use expanded to a block with require + __using__ call
-      assert {:__block__, _, _stmts} = body
+      # Module not available, so use is marked as unexpanded
+      assert {:__block__, [], [marker, {:use, _, _}]} = body
+      assert {:@, [], [{:unexpanded, [], [desc]}]} = marker
+      assert desc =~ "not available"
     end
 
     test "mark_unexpanded produces @unexpanded marker" do
@@ -123,6 +125,48 @@ defmodule ExPandaTest do
       assert {:__block__, [], [marker, ^node]} = result
       assert {:@, [], [{:unexpanded, [], [desc]}]} = marker
       assert desc =~ "test reason"
+    end
+  end
+
+  describe "use expansion" do
+    test "use GenServer inside defmodule expands successfully" do
+      code = """
+      defmodule Foo do
+        use GenServer
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      assert {:defmodule, _, [_, [do: body]]} = expanded
+      # Should produce require GenServer + expanded __using__ code (no @unexpanded markers)
+      assert {:__block__, [], [{:require, [], [GenServer]} | _rest]} = body
+      # No @unexpanded markers in the output
+      refute ast_contains_unexpanded?(expanded)
+    end
+
+    test "use GenServer expands @behaviour and def child_spec" do
+      code = """
+      defmodule Foo do
+        use GenServer
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      expanded_str = Macro.to_string(expanded)
+      assert expanded_str =~ "@behaviour GenServer"
+      assert expanded_str =~ "child_spec"
+    end
+
+    test "use with options" do
+      code = """
+      defmodule Foo do
+        use GenServer, restart: :transient
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      assert {:defmodule, _, [_, [do: body]]} = expanded
+      assert {:__block__, [], [{:require, [], [GenServer]} | _]} = body
     end
   end
 
@@ -208,5 +252,17 @@ defmodule ExPandaTest do
       assert {:defmodule, _, [_, [do: {:__block__, _, stmts}]]} = expanded
       assert [{:@, _, [{:moduledoc, _, [false]}]} | _] = stmts
     end
+  end
+
+  # --- Test Helpers ---
+
+  defp ast_contains_unexpanded?(ast) do
+    {_, found?} =
+      Macro.prewalk(ast, false, fn
+        {:@, _, [{:unexpanded, _, _}]} = node, _acc -> {node, true}
+        node, acc -> {node, acc}
+      end)
+
+    found?
   end
 end

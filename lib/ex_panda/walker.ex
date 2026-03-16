@@ -8,7 +8,7 @@ defmodule ExPanda.Walker do
      preserved as-is, with their bodies recursively expanded.
   2. **Directives** (`alias`, `import`, `require`): applied to the environment
      for subsequent expansions, preserved in output.
-  3. **`use`**: expanded via `Macro.expand/2`, then the injected code is re-walked.
+  3. **`use`**: expanded by calling `MACRO-__using__/2` directly, then re-walked.
   4. **Blocks** (`__block__`): each statement walked sequentially, threading the env.
   5. **Expressions**: expanded via `:elixir_expand.expand/3` (or `Macro.expand/2` fallback).
   6. **Failures**: unexpandable nodes are kept with an `@unexpanded` marker prepended.
@@ -154,19 +154,26 @@ defmodule ExPanda.Walker do
     {{:require, meta, [target | rest]}, new_env}
   end
 
-  # use Foo, opts -- expand the `use` macro, then re-walk the result
-  defp do_walk({:use, _meta, _args} = node, env) do
-    expanded = Macro.expand(node, env)
-
-    if expanded == node do
-      # Could not expand, mark as unexpanded
-      {mark_unexpanded(node, "use macro could not be expanded"), env}
+  # use Foo, opts -- call __using__ macro directly to bypass module table dispatch.
+  # The standard Macro.expand path fails inside defmodule because enter_module
+  # sets env.module without creating the compiler's ETS module table.
+  # Calling MACRO-__using__/2 directly avoids the dispatch check.
+  defp do_walk({:use, _meta, args} = node, env) do
+    with {:ok, module, opts} <- resolve_use_module(args, env),
+         new_env = EnvManager.apply_require(env, module),
+         {:ok, quoted} <- invoke_using_macro(module, opts, new_env) do
+      {expanded, final_env} = do_walk(quoted, new_env)
+      result = {:__block__, [], [{:require, [], [module]}, expanded]}
+      {result, final_env}
     else
-      do_walk(expanded, env)
+      {:error, reason} ->
+        {mark_unexpanded(node, reason), env}
     end
-  rescue
-    e ->
-      {mark_unexpanded(node, Exception.message(e)), env}
+  end
+
+  # defoverridable: keep as-is (compile-time directive, needs module table)
+  defp do_walk({:defoverridable, _meta, _args} = node, env) do
+    {node, env}
   end
 
   # --- Block ---
@@ -444,6 +451,43 @@ defmodule ExPanda.Walker do
 
   defp format_node({form, _, _}) when is_atom(form), do: Atom.to_string(form)
   defp format_node(_), do: "expression"
+
+  defp resolve_use_module(args, env) do
+    case args do
+      [module_ast | rest] ->
+        module = EnvManager.resolve_module_name(module_ast, env)
+
+        cond do
+          not is_atom(module) or is_nil(module) ->
+            {:error, "use: could not resolve module"}
+
+          not Code.ensure_loaded?(module) ->
+            {:error, "use: module #{inspect(module)} is not available"}
+
+          true ->
+            opts = List.first(rest) || []
+            {:ok, module, opts}
+        end
+
+      _ ->
+        {:error, "use: invalid arguments"}
+    end
+  end
+
+  defp invoke_using_macro(module, opts, env) do
+    macro_name = :"MACRO-__using__"
+
+    if function_exported?(module, macro_name, 2) do
+      try do
+        quoted = apply(module, macro_name, [env, opts])
+        {:ok, quoted}
+      rescue
+        e -> {:error, "use #{inspect(module)}: #{Exception.message(e)}"}
+      end
+    else
+      {:error, "use #{inspect(module)}: __using__/1 macro not defined"}
+    end
+  end
 
   defp get_alias_as([]), do: nil
 
