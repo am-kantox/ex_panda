@@ -163,7 +163,7 @@ defmodule ExPanda.Walker do
          new_env = EnvManager.apply_require(env, module),
          {:ok, quoted} <- invoke_using_macro(module, opts, new_env) do
       {expanded, final_env} = do_walk(quoted, new_env)
-      result = {:__block__, [], [{:require, [], [module]}, expanded]}
+      result = flatten_block([{:require, [], [module]}, expanded])
       {result, final_env}
     else
       {:error, reason} ->
@@ -451,6 +451,16 @@ defmodule ExPanda.Walker do
 
   defp format_node({form, _, _}) when is_atom(form), do: Atom.to_string(form)
   defp format_node(_), do: "expression"
+
+  defp flatten_block(stmts) do
+    flat =
+      Enum.flat_map(stmts, fn
+        {:__block__, _, inner} when is_list(inner) -> inner
+        other -> [other]
+      end)
+
+    {:__block__, [], flat}
+  end
 
   defp resolve_use_module(args, env) do
     case args do

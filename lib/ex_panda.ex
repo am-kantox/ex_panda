@@ -207,12 +207,41 @@ defmodule ExPanda do
   defp ast_to_formatted_string(ast, format_opts) do
     code =
       ast
+      |> flatten_blocks()
       |> Macro.to_string()
       |> Code.format_string!(format_opts)
       |> IO.iodata_to_binary()
 
     {:ok, code}
   end
+
+  # Recursively flatten nested __block__ nodes to avoid
+  # redundant parentheses in Macro.to_string output.
+  defp flatten_blocks({:__block__, meta, stmts}) when is_list(stmts) do
+    flat =
+      stmts
+      |> Enum.map(&flatten_blocks/1)
+      |> Enum.flat_map(fn
+        {:__block__, _, inner} when is_list(inner) -> inner
+        other -> [other]
+      end)
+
+    {:__block__, meta, flat}
+  end
+
+  defp flatten_blocks({form, meta, args}) when is_list(args) do
+    {form, meta, Enum.map(args, &flatten_blocks/1)}
+  end
+
+  defp flatten_blocks({left, right}) do
+    {flatten_blocks(left), flatten_blocks(right)}
+  end
+
+  defp flatten_blocks(list) when is_list(list) do
+    Enum.map(list, &flatten_blocks/1)
+  end
+
+  defp flatten_blocks(other), do: other
 
   defp build_env(opts) do
     env = with nil <- Keyword.get(opts, :env), do: EnvManager.new_env()
