@@ -2,8 +2,8 @@ defmodule ExPanda.MixProject do
   use Mix.Project
 
   @app :ex_panda
-  @version "0.1.0"
-  @source_url "https://github.com/Oeditus/ex_panda"
+  @version "0.2.0"
+  @source_url "https://github.com/am-kantox/ex_panda"
 
   def project do
     [
