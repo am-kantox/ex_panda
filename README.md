@@ -2,7 +2,7 @@
 
 # ExPanda
 
-[![CI](https://github.com/Oeditus/ex_panda/actions/workflows/ci.yml/badge.svg)](https://github.com/Oeditus/ex_panda/actions/workflows/ci.yml)
+[![CI](https://github.com/am-kantox/ex_panda/actions/workflows/ci.yml/badge.svg)](https://github.com/am-kantox/ex_panda/actions/workflows/ci.yml)
 [![Hex.pm](https://img.shields.io/hexpm/v/ex_panda.svg)](https://hex.pm/packages/ex_panda)
 [![Docs](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/ex_panda)
 
