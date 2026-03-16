@@ -1,4 +1,4 @@
-<img src="stuff/images/logo-500px-transparent.png" alt="ExPanda" width="240" align="right">
+<img src="https://raw.githubusercontent.com/am-kantox/ex_panda/v0.2.0/stuff/images/logo-500px-transparent.png" alt="ExPanda" width="240" align="right">
 
 # ExPanda
 
