@@ -68,6 +68,35 @@ defmodule ExPanda.WalkerTest do
     end
   end
 
+  describe "non-macro calls (no infinite loop)" do
+    test "does not loop on remote function calls" do
+      {:ok, ast} = Code.string_to_quoted("Enum.map([1, 2, 3], &to_string/1)")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      assert {{:., _, _}, _, _} = expanded
+    end
+
+    test "does not loop on Task.async_stream" do
+      {:ok, ast} =
+        Code.string_to_quoted("""
+        defmodule Foo do
+          def bar(enum) do
+            Task.async_stream(enum, fn x -> x * 2 end)
+          end
+        end
+        """)
+
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      assert {:defmodule, _, _} = expanded
+    end
+
+    test "does not loop on local function calls" do
+      {:ok, ast} = Code.string_to_quoted("to_string(42)")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      # to_string is a Kernel macro that delegates to String.Chars.to_string
+      assert {{:., _, [String.Chars, :to_string]}, _, [42]} = expanded
+    end
+  end
+
   describe "match operator" do
     test "registers variables from pattern matching" do
       {:ok, ast} =

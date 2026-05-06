@@ -377,18 +377,19 @@ defmodule ExPanda.Walker do
   # General 3-tuple AST node: try expanding as a macro
   defp do_walk({form, meta, args} = node, env) when is_atom(form) and is_list(args) do
     case try_expand_expression(node, env) do
-      {:ok, ^node, new_env} ->
-        # Not a macro -- recurse into children
-        {expanded_args, env} =
-          Enum.map_reduce(args, new_env, fn arg, acc_env ->
-            do_walk(arg, acc_env)
-          end)
-
-        {{form, meta, expanded_args}, env}
-
       {:ok, expanded, new_env} ->
-        # Macro expanded -- re-walk the result
-        do_walk(expanded, new_env)
+        if ast_eq?(expanded, node) do
+          # Not a macro / metadata-only change -- recurse into children
+          {expanded_args, final_env} =
+            Enum.map_reduce(args, new_env, fn arg, acc_env ->
+              do_walk(arg, acc_env)
+            end)
+
+          {{form, meta, expanded_args}, final_env}
+        else
+          # Macro expanded -- re-walk the result
+          do_walk(expanded, new_env)
+        end
 
       {:error, reason} ->
         {mark_unexpanded(node, reason), env}
@@ -400,7 +401,7 @@ defmodule ExPanda.Walker do
        when is_atom(fun) and is_list(args) do
     case try_expand_expression(node, env) do
       {:ok, expanded, new_env} ->
-        if expanded == node do
+        if ast_eq?(expanded, node) do
           {expanded_mod, env2} = do_walk(mod, new_env)
           {expanded_args, env3} = Enum.map_reduce(args, env2, &do_walk/2)
           {{{:., dot_meta, [expanded_mod, fun]}, call_meta, expanded_args}, env3}
@@ -522,6 +523,35 @@ defmodule ExPanda.Walker do
       {clauses, opts} -> {clauses, List.flatten(opts)}
     end)
   end
+
+  # Compare two AST nodes ignoring metadata (the second element of 3-tuples).
+  # :elixir_expand.expand/3 can annotate/normalize metadata (line numbers,
+  # variable versions, etc.) without performing any actual macro expansion.
+  # A plain == or ^pin comparison sees these metadata-only changes as "expansion"
+  # and re-walks, causing an infinite loop on non-macro calls like Task.async_stream.
+  defp ast_eq?({form1, _meta1, args1}, {form2, _meta2, args2})
+       when is_list(args1) and is_list(args2) do
+    ast_eq?(form1, form2) and
+      length(args1) == length(args2) and
+      args1 |> Enum.zip(args2) |> Enum.all?(fn {a, b} -> ast_eq?(a, b) end)
+  end
+
+  # 3-tuple with non-list third element (variable reference, etc.)
+  defp ast_eq?({form1, _meta1, ctx1}, {form2, _meta2, ctx2}) do
+    ast_eq?(form1, form2) and ast_eq?(ctx1, ctx2)
+  end
+
+  defp ast_eq?({l1, r1}, {l2, r2}) do
+    ast_eq?(l1, l2) and ast_eq?(r1, r2)
+  end
+
+  defp ast_eq?(l1, l2) when is_list(l1) and is_list(l2) do
+    length(l1) == length(l2) and
+      l1 |> Enum.zip(l2) |> Enum.all?(fn {a, b} -> ast_eq?(a, b) end)
+  end
+
+  defp ast_eq?(a, a), do: true
+  defp ast_eq?(_, _), do: false
 
   defp split_for_clauses(args) do
     Enum.split_while(args, fn
