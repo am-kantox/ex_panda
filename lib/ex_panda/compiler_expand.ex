@@ -57,9 +57,14 @@ defmodule ExPanda.CompilerExpand do
   # --- Private ---
 
   defp expand_via_compiler(ast, env) do
-    ex_env = :elixir_env.env_to_ex(env)
-    {expanded, _ex_env, new_e_env} = :elixir_expand.expand(ast, ex_env, env)
-    {:ok, expanded, new_e_env}
+    {result, _diagnostics} =
+      Code.with_diagnostics(fn ->
+        ex_env = :elixir_env.env_to_ex(env)
+        {expanded, _ex_env, new_e_env} = :elixir_expand.expand(ast, ex_env, env)
+        {:ok, expanded, new_e_env}
+      end)
+
+    result
   end
 
   defp fallback_expand(ast, env, _compiler_error) do
