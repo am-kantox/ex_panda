@@ -2,7 +2,7 @@ defmodule ExPanda.MixProject do
   use Mix.Project
 
   @app :ex_panda
-  @version "0.2.1"
+  @version "0.2.2"
   @source_url "https://github.com/am-kantox/ex_panda"
 
   def project do
