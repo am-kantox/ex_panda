@@ -20,9 +20,25 @@ defmodule ExPanda do
       {:ok, expanded} = ExPanda.expand_file("lib/my_module.ex")
 
       # Expand a pre-parsed AST
-      {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
+      {:ok, ast} = Code.string_to_quoted("unless true, do: :never")
       {:ok, expanded} = ExPanda.expand(ast)
-      # => {{:., _, [String.Chars, :to_string]}, _, [1]}
+      # => {:case, _, [true, [do: [...]]]}
+
+  ## Operators Are Preserved
+
+  ExPanda expands *macros*, not operators. Operators are kept verbatim and
+  only their operands are expanded:
+
+      {:ok, expanded} = ExPanda.expand_string("1 + 2")
+      # => {:+, _, [1, 2]}     (not `:erlang.+(1, 2)`)
+
+      {:ok, expanded} = ExPanda.expand_string("1 |> to_string()")
+      # => {:|>, _, [1, {:to_string, _, []}]}
+
+  The `&` capture operator is likewise treated as a reference, never a call:
+
+      {:ok, expanded} = ExPanda.expand_string("&Enum.map/2")
+      # => {:&, _, [{:/, _, [{{:., _, [Enum, :map]}, _, []}, 2]}]}
 
   ## Structural Preservation
 
@@ -118,7 +134,7 @@ defmodule ExPanda do
 
       iex> {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
       iex> {:ok, expanded} = ExPanda.expand(ast)
-      iex> match?({{:., _, [String.Chars, :to_string]}, _, [1]}, expanded)
+      iex> match?({:|>, _, [1, _]}, expanded)
       true
   """
   @spec expand(Macro.t(), keyword()) :: {:ok, Macro.t()} | {:error, term()}
@@ -175,7 +191,7 @@ defmodule ExPanda do
 
       iex> {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
       iex> {:ok, code} = ExPanda.expand_to_string(ast)
-      iex> code =~ "String.Chars.to_string"
+      iex> code =~ "|>"
       true
   """
   @spec expand_to_string(String.t() | Macro.t(), keyword()) ::

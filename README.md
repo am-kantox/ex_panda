@@ -15,21 +15,20 @@ structural constructs (`defmodule`, `def`/`defp`) as-is.
 ## The Problem
 
 `Code.string_to_quoted/1` returns the **surface-level** AST. Macros such as
-`unless`, `|>`, `use GenServer`, Ecto's `schema`, and Phoenix macros all remain
+`unless`, `use GenServer`, Ecto's `schema`, and Phoenix macros all remain
 as opaque calls:
 
 ```elixir
-{:ok, ast} = Code.string_to_quoted("1 |> to_string() |> String.upcase()")
-# => {:|>, _, [{:|>, _, [1, {:to_string, _, []}]}, ...]}
+{:ok, ast} = Code.string_to_quoted("unless true, do: :never")
+# => {:unless, _, [true, [do: :never]]}
 ```
 
-For tools that need to reason about the actual control flow, data flow, or
-function call graph, this is insufficient. ExPanda resolves all macros to their
-expanded forms:
+For tools that need to reason about the actual control flow or data flow,
+this is insufficient. ExPanda resolves macros to their expanded forms:
 
 ```elixir
-{:ok, expanded} = ExPanda.expand_string("1 |> to_string() |> String.upcase()")
-# => {{:., _, [String, :upcase]}, _, [{{:., _, [String.Chars, :to_string]}, _, [1]}]}
+{:ok, expanded} = ExPanda.expand_string("unless true, do: :never")
+# => {:case, _, [true, [do: [false -> :never, true -> nil]]]}
 ```
 
 ## Installation
@@ -39,7 +38,7 @@ Add `ex_panda` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ex_panda, "~> 0.1"}
+    {:ex_panda, "~> 0.2"}
   ]
 end
 ```
@@ -63,9 +62,9 @@ end
 ### Expanding a Pre-parsed AST
 
 ```elixir
-{:ok, ast} = Code.string_to_quoted("1 |> to_string()")
+{:ok, ast} = Code.string_to_quoted("unless true, do: :never")
 {:ok, expanded} = ExPanda.expand(ast)
-# => {{:., _, [String.Chars, :to_string]}, _, [1]}
+# => {:case, _, [true, [do: _]]}
 ```
 
 ### Expanding to Formatted Source Code
@@ -74,12 +73,46 @@ To get back formatted Elixir source instead of AST, use `expand_to_string/2`.
 It accepts both source strings and pre-parsed AST:
 
 ```elixir
-{:ok, code} = ExPanda.expand_to_string("1 |> to_string() |> String.upcase()")
-# => "String.upcase(String.Chars.to_string(1))"
+{:ok, code} = ExPanda.expand_to_string("unless true, do: :never")
+# => "case true do\n  false -> :never\n  true -> nil\nend"
+```
 
-{:ok, ast} = Code.string_to_quoted("unless true, do: :never")
-{:ok, code} = ExPanda.expand_to_string(ast)
-# => "case true do\n  x when x in [false, nil] ->\n    :never\n  _ ->\n    nil\nend"
+## Operators Are Preserved
+
+ExPanda expands **macros**, not operators. Operators are kept verbatim and
+only their operands are expanded:
+
+```elixir
+{:ok, expanded} = ExPanda.expand_string("1 + 2")
+# => {:+, _, [1, 2]}          (not :erlang.+(1, 2))
+
+{:ok, expanded} = ExPanda.expand_string("a && b")
+# => {:&&, _, [a, b]}         (not a `case` on `:erlang.orelse/2`)
+
+{:ok, expanded} = ExPanda.expand_string("1 |> to_string()")
+# => {:|>, _, [1, {:to_string, _, []}]}
+```
+
+This applies to arithmetic (`+`, `-`, `*`, `/`), comparison (`==`, `<`, ...),
+boolean (`&&`, `||`, `and`, `or`, `not`), and other operators (`<>`, `++`,
+`in`, `|>`, `..`). Macros nested *inside* operands are still expanded:
+
+```elixir
+{:ok, expanded} = ExPanda.expand_string("x + unless(true, do: 1)")
+# => {:+, _, [x, {:case, _, _}]}
+```
+
+## Capture Operator
+
+The `&` capture operator is treated as a reference, never as a call, so
+captures survive expansion intact:
+
+```elixir
+{:ok, expanded} = ExPanda.expand_string("&Enum.map/2")
+# => {:&, _, [{:/, _, [{{:., _, [Enum, :map]}, _, []}, 2]}]}
+
+{:ok, expanded} = ExPanda.expand_string("&(&1 + 1)")
+# => {:&, _, [{:+, _, [{:&, _, [1]}, 1]}]}
 ```
 
 ### Expanding with a Custom Environment

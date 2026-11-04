@@ -9,16 +9,15 @@ defmodule ExPandaTest do
       assert {:case, _, [true, [do: _clauses]]} = expanded
     end
 
-    test "expands pipe operator" do
+    test "preserves the pipe operator" do
       {:ok, expanded} = ExPanda.expand_string("1 |> to_string()")
-      assert {{:., _, [String.Chars, :to_string]}, _, [1]} = expanded
+      assert {:|>, _, [1, _call]} = expanded
     end
 
-    test "expands nested pipe chain" do
+    test "preserves a nested pipe chain" do
       {:ok, expanded} = ExPanda.expand_string("1 |> to_string() |> String.upcase()")
 
-      assert {{:., _, [String, :upcase]}, _, [{{:., _, [String.Chars, :to_string]}, _, [1]}]} =
-               expanded
+      assert {:|>, _, [{:|>, _, [1, _]}, {{:., _, [String, :upcase]}, _, []}]} = expanded
     end
 
     test "returns error on parse failure" do
@@ -73,10 +72,10 @@ defmodule ExPandaTest do
       assert {:case, _, _} = expanded
     end
 
-    test "expands pipe AST" do
+    test "preserves pipe AST" do
       {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
       {:ok, expanded} = ExPanda.expand(ast)
-      assert {{:., _, [String.Chars, :to_string]}, _, [1]} = expanded
+      assert {:|>, _, [1, _call]} = expanded
     end
 
     test "passes through literals unchanged" do

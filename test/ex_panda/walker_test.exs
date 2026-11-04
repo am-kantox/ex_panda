@@ -36,10 +36,108 @@ defmodule ExPanda.WalkerTest do
       assert {:case, _, [true, [do: _]]} = expanded
     end
 
-    test "expands pipe to function call" do
+    test "preserves pipe operator" do
       {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
       {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
-      assert {{:., _, [String.Chars, :to_string]}, _, [1]} = expanded
+      assert {:|>, _, [1, _call]} = expanded
+    end
+  end
+
+  describe "operator preservation" do
+    test "preserves arithmetic operators instead of lowering to :erlang BIFs" do
+      for src <- ["1 + 2", "a - b", "a * b", "a / b"] do
+        {:ok, ast} = Code.string_to_quoted(src)
+        {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+        assert {op, _, [_, _]} = expanded
+        assert op in [:+, :-, :*, :/]
+        refute match?({{:., _, [:erlang, _]}, _, _}, expanded)
+      end
+    end
+
+    test "preserves Kernel macro operators" do
+      cases = [
+        {"a <> b", :<>},
+        {"a && b", :&&},
+        {"a || b", :||},
+        {"a in b", :in},
+        {"a and b", :and},
+        {"a or b", :or},
+        {"a ++ b", :++}
+      ]
+
+      for {src, expected_op} <- cases do
+        {:ok, ast} = Code.string_to_quoted(src)
+        {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+        assert {^expected_op, _, [_, _]} = expanded
+      end
+    end
+
+    test "preserves comparison operators" do
+      for src <- ["a == b", "a != b", "a === b", "a < b", "a > b", "a <= b", "a >= b"] do
+        {:ok, ast} = Code.string_to_quoted(src)
+        {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+        assert {op, _, [_, _]} = expanded
+        assert op in [:==, :!=, :===, :<, :>, :<=, :>=]
+      end
+    end
+
+    test "preserves unary operators" do
+      {:ok, ast} = Code.string_to_quoted("not a")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      assert {:not, _, [_]} = expanded
+
+      {:ok, ast} = Code.string_to_quoted("-a")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      assert {:-, _, [_]} = expanded
+    end
+
+    test "still expands macros nested inside operator operands" do
+      {:ok, ast} = Code.string_to_quoted("x + unless(true, do: 1)")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+      assert {:+, _, [_, {:case, _, _}]} = expanded
+    end
+  end
+
+  describe "capture operator" do
+    test "preserves remote capture &Mod.fun/arity" do
+      {:ok, ast} = Code.string_to_quoted("&Enum.map/2")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+      # The capture body is left untouched, so the alias node is preserved.
+      assert {:&, _, [{:/, _, [{{:., _, [{:__aliases__, _, [:Enum]}, :map]}, _, []}, 2]}]} =
+               expanded
+
+      refute match?({:&, _, [{{:., _, [:erlang, _]}, _, _}]}, expanded)
+    end
+
+    test "preserves local capture &fun/arity" do
+      {:ok, ast} = Code.string_to_quoted("&to_string/1")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+      assert {:&, _, [{:/, _, [{:to_string, _, _}, 1]}]} = expanded
+    end
+
+    test "preserves anonymous capture with placeholders" do
+      {:ok, ast} = Code.string_to_quoted("&(&1 + 1)")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+      assert {:&, _, [{:+, _, [{:&, _, [1]}, 1]}]} = expanded
+    end
+
+    test "preserves capture with multiple placeholders" do
+      {:ok, ast} = Code.string_to_quoted("&(&1 + &2)")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+      assert {:&, _, [{:+, _, [{:&, _, [1]}, {:&, _, [2]}]}]} = expanded
+    end
+
+    test "capture output round-trips through formatted source" do
+      for src <- ["&Enum.map/2", "&to_string/1", "&(&1 + 1)", "&(&1 + &2)"] do
+        assert {:ok, out} = ExPanda.expand_to_string(src)
+        assert {:ok, _} = Code.string_to_quoted(out)
+      end
     end
   end
 

@@ -34,6 +34,10 @@ defmodule ExPanda.Walker do
 
   @func_types [:def, :defp, :defmacro, :defmacrop]
 
+  # Forms that must never be treated as operators, even though
+  # `Macro.operator?/2` returns true for some of them.
+  @special_forms [:fn, :case, :cond, :with, :for, :try, :receive, :quote, :unquote]
+
   @doc """
   Walk and expand the AST starting from the given environment.
 
@@ -383,6 +387,20 @@ defmodule ExPanda.Walker do
     {{:fn, meta, expanded_clauses}, env}
   end
 
+  # --- Capture operator ---
+
+  # `&` captures must be treated as opaque: the body is a *reference*, not a
+  # call. Recursing into it would rewrite `&Enum.map/2` into
+  # `&:erlang./(Enum.map(), 2)` and `&(&1 + 1)` into invalid syntax.
+  #
+  # We still expand macros *inside* the capture (e.g. `&unless(&1, do: &1)`),
+  # but never the `/` of a `name/arity` capture nor the bare target of a
+  # remote capture.
+  defp do_walk({:&, meta, [body]}, env) do
+    {expanded_body, final_env} = walk_capture(body, env)
+    {{:&, meta, [expanded_body]}, final_env}
+  end
+
   # --- General expression expansion ---
 
   # Module attribute: keep as-is (structural)
@@ -410,26 +428,29 @@ defmodule ExPanda.Walker do
     {literal, env}
   end
 
-  # General 3-tuple AST node: try expanding as a macro
-  defp do_walk({form, meta, args} = node, env) when is_atom(form) and is_list(args) do
-    case try_expand_expression(node, env) do
-      {:ok, expanded, new_env} ->
-        if ast_eq?(expanded, node) do
-          # Not a macro / metadata-only change -- recurse into children
-          {expanded_args, final_env} =
-            Enum.map_reduce(args, new_env, fn arg, acc_env ->
-              do_walk(arg, acc_env)
-            end)
-
-          {{form, meta, expanded_args}, final_env}
-        else
-          # Macro expanded -- re-walk the result
-          do_walk(expanded, new_env)
-        end
-
-      {:error, reason} ->
-        {mark_unexpanded(node, reason), env}
+  # Operators are preserved verbatim (only their operands are expanded).
+  #
+  # Several operators are Kernel *macros* (`<>`, `&&`, `||`, `in`, `|>`,
+  # `and`, `or`, `..`), and the rest (`+`, `-`, `*`, `/`, `==`, ...) are
+  # special forms that `:elixir_expand` lowers to `:erlang.*` BIF calls.
+  # For an introspection tool neither rewrite is desirable: the caller asked
+  # for macro expansion, not operator lowering. Keeping operators intact also
+  # keeps the output readable and round-trip safe.
+  #
+  # This clause must precede the generic 3-tuple clause below.
+  defp do_walk({op, meta, args} = node, env)
+       when is_atom(op) and is_list(args) and op not in @special_forms do
+    if Macro.operator?(op, length(args)) do
+      {expanded_args, final_env} = Enum.map_reduce(args, env, &do_walk/2)
+      {{op, meta, expanded_args}, final_env}
+    else
+      walk_general(node, env)
     end
+  end
+
+  # General 3-tuple AST node: try expanding as a macro
+  defp do_walk({form, meta, args}, env) when is_atom(form) and is_list(args) do
+    walk_general({form, meta, args}, env)
   end
 
   # Remote call: {{:., meta, [module, fun]}, call_meta, args}
@@ -458,6 +479,41 @@ defmodule ExPanda.Walker do
   defp try_expand_expression(ast, env) do
     CompilerExpand.expand(ast, env)
   end
+
+  # Expand a node as a macro; if it is not a macro, recurse into its children.
+  defp walk_general({form, meta, args} = node, env) do
+    case try_expand_expression(node, env) do
+      {:ok, expanded, new_env} ->
+        if ast_eq?(expanded, node) do
+          {expanded_args, final_env} = Enum.map_reduce(args, new_env, &do_walk/2)
+          {{form, meta, expanded_args}, final_env}
+        else
+          do_walk(expanded, new_env)
+        end
+
+      {:error, reason} ->
+        {mark_unexpanded(node, reason), env}
+    end
+  end
+
+  # Walk the body of a `&` capture without treating references as calls.
+  #
+  #   * `&Mod.fun/arity` and `&fun/arity` -- left completely untouched
+  #   * `&Mod.fun(&1)` / `&(&1 + 1)`     -- operands expanded, `&n` preserved
+  defp walk_capture({:/, _meta, [_, arity]} = node, env) when is_integer(arity) do
+    {node, env}
+  end
+
+  defp walk_capture({op, meta, args}, env) when is_atom(op) and is_list(args) do
+    {expanded_args, final_env} = Enum.map_reduce(args, env, &do_walk_capture_arg/2)
+    {{op, meta, expanded_args}, final_env}
+  end
+
+  defp walk_capture(other, env), do: do_walk(other, env)
+
+  # Capture placeholders `&1`, `&2`, ... are variables, not calls.
+  defp do_walk_capture_arg({:&, meta, [n]}, env) when is_integer(n), do: {{:&, meta, [n]}, env}
+  defp do_walk_capture_arg(arg, env), do: walk_capture(arg, env)
 
   defp expand_clause({:->, arrow_meta, [patterns, body]}, env) do
     clause_env = register_clause_vars(env, patterns)
