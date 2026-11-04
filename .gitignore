@@ -25,3 +25,9 @@ ex_panda-*.tar
 /.elixir-tools/
 /.elixir_ls/
 /.erl.history/
+
+# Local tooling state (Ragex index, Yoke session logs, sockets)
+/.ragex/
+/.yoke/
+*.sock
+

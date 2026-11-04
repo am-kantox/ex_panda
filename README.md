@@ -131,6 +131,52 @@ Directives (`alias`, `import`, `require`) are also preserved in the output
 and applied to the environment so that subsequent macro expansions resolve
 correctly.
 
+## `with` and `for`
+
+`with` and `for` keep their keyword options (`do:`, `else:`, `into:`,
+`reduce:`) as a **single trailing keyword list**, exactly as the Elixir parser
+produces them. The option pairs are never spliced into the positional argument
+list, so the expanded AST always round-trips:
+
+```elixir
+{:ok, expanded} = ExPanda.expand_string("with {:ok, x} <- {:ok, 1}, do: x")
+# => {:with, _, [{:<-, _, _}, [do: {:x, _, nil}]]}
+
+{:ok, expanded} = ExPanda.expand_string("for x <- [1, 2], into: %{}, do: {x, x}")
+# => {:for, _, [{:<-, _, _}, [into: {:%{}, _, []}, do: _]]}
+```
+
+## `defdelegate`
+
+`defdelegate` is a `Kernel` macro implemented *in terms of* `def`, so the
+compiler's expander (`:elixir_expand`) rejects it with
+`no function clause matching in :elixir_bootstrap.def/2`. ExPanda therefore
+expands it itself, mirroring `Kernel.Utils.defdelegate_all/3` and
+`Kernel.Utils.defdelegate_each/2`:
+
+```elixir
+{:ok, expanded} = ExPanda.expand_string("""
+defmodule Foo do
+  defdelegate bar(x), to: Baz, as: :quux
+end
+""")
+
+# => def bar(x), do: Baz.quux(x)
+```
+
+All forms are supported — single function, zero-arity without parentheses,
+and the list form (which yields one `def` per delegated function):
+
+```elixir
+defdelegate bar, to: Baz                 # def bar(), do: Baz.bar()
+defdelegate [a(x), b(y)], to: Baz        # def a(x), do: Baz.a(x)
+                                         # def b(y), do: Baz.b(y)
+```
+
+The `:to` target is resolved like any other alias, so the emitted call
+references the module atom (`Baz`), exactly as a compiled `defdelegate` would.
+A `defdelegate` without a `:to` option is reported with an `@unexpanded` marker.
+
 ## Unexpandable Macros
 
 When a macro cannot be expanded (e.g., the target module is not loaded in the

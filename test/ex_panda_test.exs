@@ -254,6 +254,152 @@ defmodule ExPandaTest do
     end
   end
 
+  describe "defdelegate expansion" do
+    test "expands defdelegate into a def calling the target module" do
+      code = """
+      defmodule Foo do
+        defdelegate bar(x), to: Baz
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      assert {:defmodule, _, [_, [do: def_node]]} = expanded
+      assert {:def, _, [{:bar, _, [{:x, _, _}]}, [do: call]]} = def_node
+      # `:to` is resolved to the module atom, matching compiled behaviour.
+      assert {{:., _, [Baz, :bar]}, _, [{:x, _, _}]} = call
+    end
+
+    test "expands defdelegate with :as option" do
+      code = """
+      defmodule Foo do
+        defdelegate bar(x), to: Baz, as: :quux
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      assert {:defmodule, _, [_, [do: def_node]]} = expanded
+      assert {:def, _, [{:bar, _, _}, [do: call]]} = def_node
+      assert {{:., _, [Baz, :quux]}, _, _} = call
+    end
+
+    test "expands zero-arity defdelegate without parentheses" do
+      code = """
+      defmodule Foo do
+        defdelegate bar, to: Baz
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      assert {:defmodule, _, [_, [do: def_node]]} = expanded
+      assert {:def, _, [{:bar, _, []}, [do: call]]} = def_node
+      assert {{:., _, [Baz, :bar]}, _, []} = call
+    end
+
+    test "expands list form of defdelegate into multiple defs" do
+      code = """
+      defmodule Foo do
+        defdelegate [bar(x), baz(y)], to: Baz
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      assert {:defmodule, _, [_, [do: {:__block__, _, [first, second]}]]} = expanded
+      assert {:def, _, [{:bar, _, _}, [do: {{:., _, [_, :bar]}, _, _}]]} = first
+      assert {:def, _, [{:baz, _, _}, [do: {{:., _, [_, :baz]}, _, _}]]} = second
+    end
+
+    test "does not leave an @unexpanded marker" do
+      code = """
+      defmodule Foo do
+        defdelegate bar(x), to: Baz
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      refute ast_contains_unexpanded?(expanded)
+    end
+
+    test "expands macros in sibling statements after a defdelegate" do
+      code = """
+      defmodule Foo do
+        defdelegate bar(x), to: String, as: :upcase
+        def baz, do: unless(true, do: :no)
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      assert {:defmodule, _, [_, [do: {:__block__, _, [_, baz_def]}]]} = expanded
+      assert {:def, _, [{:baz, _, _}, [do: {:case, _, _}]]} = baz_def
+    end
+
+    test "marks defdelegate without :to as unexpanded" do
+      code = """
+      defmodule Foo do
+        defdelegate bar(x)
+      end
+      """
+
+      {:ok, expanded} = ExPanda.expand_string(code)
+      assert ast_contains_unexpanded?(expanded)
+    end
+  end
+
+  describe "with/for keyword options stay a single trailing list" do
+    test "with keeps do: as a keyword pair, not a positional arg" do
+      {:ok, out} = ExPanda.expand_to_string("with {:ok, x} <- {:ok, 1}, do: x")
+      {:ok, reparsed} = Code.string_to_quoted(out)
+
+      assert {:with, _, args} = reparsed
+      assert is_list(List.last(args))
+      assert Keyword.keyword?(List.last(args))
+      assert Keyword.has_key?(List.last(args), :do)
+    end
+
+    test "with keeps else: alongside do:" do
+      {:ok, out} = ExPanda.expand_to_string("with {:ok, x} <- f(), do: x, else: (_ -> :err)")
+      {:ok, {:with, _, args}} = Code.string_to_quoted(out)
+
+      opts = List.last(args)
+      assert Keyword.keyword?(opts)
+      assert Keyword.has_key?(opts, :do)
+      assert Keyword.has_key?(opts, :else)
+    end
+
+    test "for keeps do: as a keyword pair" do
+      {:ok, out} = ExPanda.expand_to_string("for x <- [1, 2], do: x * 2")
+      {:ok, {:for, _, args}} = Code.string_to_quoted(out)
+
+      assert Keyword.keyword?(List.last(args))
+      assert Keyword.has_key?(List.last(args), :do)
+    end
+
+    test "for keeps into: and do: together" do
+      {:ok, out} = ExPanda.expand_to_string("for x <- [1, 2], into: %{}, do: {x, x}")
+      {:ok, {:for, _, args}} = Code.string_to_quoted(out)
+
+      opts = List.last(args)
+      assert Keyword.keyword?(opts)
+      assert Keyword.has_key?(opts, :into)
+      assert Keyword.has_key?(opts, :do)
+    end
+
+    test "for keeps reduce: and do:" do
+      {:ok, out} = ExPanda.expand_to_string("for x <- [1, 2], reduce: 0, do: (acc -> acc + x)")
+      {:ok, {:for, _, args}} = Code.string_to_quoted(out)
+
+      opts = List.last(args)
+      assert Keyword.keyword?(opts)
+      assert Keyword.has_key?(opts, :reduce)
+    end
+
+    test "for keeps filters alongside generators" do
+      {:ok, out} = ExPanda.expand_to_string("for x <- [1, 2], x > 1, do: x")
+      {:ok, {:for, _, args}} = Code.string_to_quoted(out)
+
+      assert Keyword.keyword?(List.last(args))
+    end
+  end
+
   # --- Test Helpers ---
 
   defp ast_contains_unexpanded?(ast) do

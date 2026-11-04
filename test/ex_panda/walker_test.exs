@@ -97,6 +97,23 @@ defmodule ExPanda.WalkerTest do
     end
   end
 
+  describe "defdelegate expansion" do
+    test "expands defdelegate to a def with a remote call" do
+      {:ok, ast} = Code.string_to_quoted("defmodule Foo do defdelegate bar(x), to: Baz end")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+      assert {:defmodule, _, [_, [do: {:def, _, [{:bar, _, _}, [do: call]]}]]} = expanded
+      assert {{:., _, [Baz, :bar]}, _, _} = call
+    end
+
+    test "expands list form into a block of defs" do
+      {:ok, ast} = Code.string_to_quoted("defmodule Foo do defdelegate [a(x), b(y)], to: Baz end")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+      assert {:defmodule, _, [_, [do: {:__block__, _, [_, _]}]]} = expanded
+    end
+  end
+
   describe "match operator" do
     test "registers variables from pattern matching" do
       {:ok, ast} =

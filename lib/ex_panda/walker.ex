@@ -12,6 +12,22 @@ defmodule ExPanda.Walker do
   4. **Blocks** (`__block__`): each statement walked sequentially, threading the env.
   5. **Expressions**: expanded via `:elixir_expand.expand/3` (or `Macro.expand/2` fallback).
   6. **Failures**: unexpandable nodes are kept with an `@unexpanded` marker prepended.
+  ## `defdelegate`
+
+  `defdelegate` is a `Kernel` macro that expands into a `def` whose body calls
+  the target module. Because `:elixir_expand.expand/3` only understands
+  `def`/`defp` (and `defdelegate` is itself implemented *in terms of* `def`),
+  feeding a `defdelegate` node to the compiler's expander raises
+  `:elixir_bootstrap.def/2` and the node would be reported as unexpandable.
+
+  The walker therefore expands `defdelegate` itself, mirroring
+  `Kernel.Utils.defdelegate_all/3` and `Kernel.Utils.defdelegate_each/2`:
+
+      defdelegate bar(x), to: Baz, as: :quux
+      # => def bar(x), do: Baz.quux(x)
+
+  Both the single-function and the list form are supported, and the resulting
+  `def` nodes are re-walked so their bodies are expanded like any other.
   """
 
   alias ExPanda.{CompilerExpand, EnvManager}
@@ -124,6 +140,26 @@ defmodule ExPanda.Walker do
       end)
 
     {{func_type, meta, [{name, sig_meta, args}, expanded_opts]}, env}
+  end
+
+  # defdelegate fun(args), to: Target[, as: :name]
+  # defdelegate [fun1(args), fun2(args)], to: Target[, as: :name]
+  #
+  # Expanded by hand (see @moduledoc): the compiler's expander only knows
+  # def/defp, so a defdelegate node reaching :elixir_expand raises
+  # `no function clause matching in :elixir_bootstrap.def/2`.
+  #
+  # The malformed `defdelegate bar(x)` form (no options at all) is matched too:
+  # it parses with a `nil` second argument, and without this clause it would
+  # silently fall through to the catch-all and be emitted verbatim instead of
+  # being flagged as unexpandable.
+  defp do_walk({:defdelegate, meta, [funs | rest]} = node, env) do
+    opts = List.first(rest)
+
+    case expand_defdelegate(meta, funs, opts) do
+      {:ok, expanded} -> do_walk(expanded, env)
+      {:error, reason} -> {mark_unexpanded(node, reason), env}
+    end
   end
 
   # --- Directives ---
@@ -257,7 +293,7 @@ defmodule ExPanda.Walker do
           other
       end)
 
-    {{:with, meta, expanded_clauses ++ expanded_opts}, env}
+    {{:with, meta, expanded_clauses ++ [expanded_opts]}, env}
   end
 
   # --- Try/Rescue/Catch ---
@@ -330,7 +366,7 @@ defmodule ExPanda.Walker do
           other
       end)
 
-    {{:for, meta, expanded_gens ++ expanded_opts}, env}
+    {{:for, meta, expanded_gens ++ [expanded_opts]}, env}
   end
 
   # --- fn clauses ---
@@ -463,6 +499,43 @@ defmodule ExPanda.Walker do
     {:__block__, [], flat}
   end
 
+  # Mirror Kernel.Utils.defdelegate_all/3 + defdelegate_each/2 without
+  # requiring a compiled module table.
+  defp expand_defdelegate(meta, funs, opts) do
+    cond do
+      not is_list(opts) ->
+        {:error, "defdelegate: expected options, got: #{inspect(opts)}"}
+
+      is_nil(opts[:to]) ->
+        {:error, "defdelegate: missing :to option"}
+
+      not is_list(funs) and not is_tuple(funs) ->
+        {:error, "defdelegate: invalid function specification"}
+
+      true ->
+        target = opts[:to]
+
+        funs
+        |> List.wrap()
+        |> Enum.map(&delegate_def(&1, target, opts, meta))
+        |> case do
+          [single] -> {:ok, single}
+          many -> {:ok, {:__block__, [], many}}
+        end
+    end
+  rescue
+    e -> {:error, "defdelegate: #{Exception.message(e)}"}
+  end
+
+  # Kernel.Utils.defdelegate_each/2 normalises both the single-function and
+  # the list forms into `{name, args, as, as_args}`, with `args`/`as_args`
+  # always lists (`defdelegate bar, to: Baz` yields `args == []`).
+  defp delegate_def(fun, target, opts, meta) do
+    {name, args, as, as_args} = Kernel.Utils.defdelegate_each(fun, opts)
+
+    {:def, meta, [{name, [], args}, [do: {{:., [], [target, as]}, [], as_args}]]}
+  end
+
   defp resolve_use_module(args, env) do
     case args do
       [module_ast | rest] ->
@@ -512,16 +585,16 @@ defmodule ExPanda.Walker do
 
   defp get_alias_as(_), do: nil
 
+  # Split `with` arguments into the leading clause list and the trailing
+  # keyword options (`do:`/`else:`).
+  #
+  # The parser already groups the options into a single trailing keyword list,
+  # so the common shapes are `[clauses..., [do: ..., else: ...]]`. A flat
+  # `[clause, {:do, ...}, {:else, ...}]` shape is also accepted for robustness.
   defp split_with_clauses(args) do
-    Enum.split_while(args, fn
-      [{:do, _} | _] -> false
-      {:do, _} -> false
-      _ -> true
-    end)
-    |> then(fn
-      {clauses, [opts]} when is_list(opts) -> {clauses, opts}
-      {clauses, opts} -> {clauses, List.flatten(opts)}
-    end)
+    case split_trailing_opts(args) do
+      {clauses, opts} -> {clauses, opts}
+    end
   end
 
   # Compare two AST nodes ignoring metadata (the second element of 3-tuples).
@@ -553,18 +626,34 @@ defmodule ExPanda.Walker do
   defp ast_eq?(a, a), do: true
   defp ast_eq?(_, _), do: false
 
+  # Split `for` arguments into the leading generator/filter list and the
+  # trailing keyword options (`do:`/`into:`/`reduce:`/`uniq:`).
+  #
+  # The parser groups the options into a single trailing keyword list, so
+  # `for x <- xs, into: %{}, do: ...` arrives as
+  # `[{:<-, _, _}, [into: ..., do: ...]]`.
   defp split_for_clauses(args) do
-    Enum.split_while(args, fn
-      [{:do, _} | _] -> false
-      {:do, _} -> false
-      {:into, _} -> false
-      {:reduce, _} -> false
-      {:uniq, _} -> false
-      _ -> true
-    end)
-    |> then(fn
-      {generators, [opts]} when is_list(opts) -> {generators, opts}
-      {generators, opts} -> {generators, List.flatten(opts)}
-    end)
+    split_trailing_opts(args)
+  end
+
+  # Split a `with`/`for` argument list into `{leading_clauses, keyword_opts}`.
+  #
+  # Handles both parser-produced shapes:
+  #
+  #   * grouped   -- `[clause, [do: ..., else: ...]]`
+  #   * flat      -- `[clause, {:do, ...}, {:else, ...}]`
+  #
+  # In both cases the result is `{[clause], [do: ..., else: ...]}`, which is
+  # exactly what `Macro.to_string/1` expects: the options must stay a *single*
+  # keyword-list element, never spliced into the positional argument list.
+  defp split_trailing_opts(args) do
+    {leading, trailing} =
+      Enum.split_while(args, fn
+        [{key, _} | _] when is_atom(key) -> false
+        {key, _} when is_atom(key) -> false
+        _ -> true
+      end)
+
+    {leading, List.flatten(trailing)}
   end
 end
