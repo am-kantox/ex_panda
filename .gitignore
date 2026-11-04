@@ -26,6 +26,9 @@ ex_panda-*.tar
 /.elixir_ls/
 /.erl.history/
 
+# Dialyzer PLTs are large, machine-specific build artifacts
+/.dialyzer/*plt*
+
 # Local tooling state (Ragex index, Yoke session logs, sockets)
 /.ragex/
 /.yoke/

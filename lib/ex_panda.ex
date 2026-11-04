@@ -101,7 +101,7 @@ defmodule ExPanda do
         expand(ast, opts)
 
       {:error, {meta, message, token}} ->
-        line = if is_list(meta), do: Keyword.get(meta, :line, 0), else: 0
+        line = if Keyword.keyword?(meta), do: Keyword.get(meta, :line, 0), else: 0
         {:error, "Parse error at line #{line}: #{inspect(message)}#{inspect(token)}"}
     end
   end
@@ -277,7 +277,11 @@ defmodule ExPanda do
   defp flatten_blocks(other), do: other
 
   defp build_env(opts) do
-    env = with nil <- Keyword.get(opts, :env), do: EnvManager.new_env()
+    env =
+      case Keyword.get(opts, :env) do
+        %Macro.Env{} = env -> env
+        _ -> EnvManager.new_env()
+      end
 
     case Keyword.get(opts, :file) do
       nil -> env
