@@ -77,30 +77,45 @@ It accepts both source strings and pre-parsed AST:
 # => "case true do\n  false -> :never\n  true -> nil\nend"
 ```
 
-## Operators Are Preserved
+## Operators: `:expand_operators`
 
-ExPanda expands **macros**, not operators. Operators are kept verbatim and
-only their operands are expanded:
+By default (`expand_operators: true`) operators are expanded like any other
+macro or special form, matching historical behaviour:
 
 ```elixir
 {:ok, expanded} = ExPanda.expand_string("1 + 2")
-# => {:+, _, [1, 2]}          (not :erlang.+(1, 2))
-
-{:ok, expanded} = ExPanda.expand_string("a && b")
-# => {:&&, _, [a, b]}         (not a `case` on `:erlang.orelse/2`)
+# => {{:., _, [:erlang, :+]}, _, [1, 2]}
 
 {:ok, expanded} = ExPanda.expand_string("1 |> to_string()")
+# => {{:., _, [String.Chars, :to_string]}, _, [1]}
+```
+
+Pass `expand_operators: false` to keep operators verbatim and expand only
+their operands. This yields more readable, round-trip-safe output:
+
+```elixir
+{:ok, expanded} = ExPanda.expand_string("1 + 2", expand_operators: false)
+# => {:+, _, [1, 2]}
+
+{:ok, expanded} = ExPanda.expand_string("a && b", expand_operators: false)
+# => {:&&, _, [a, b]}
+
+{:ok, expanded} = ExPanda.expand_string("1 |> to_string()", expand_operators: false)
 # => {:|>, _, [1, {:to_string, _, []}]}
 ```
 
 This applies to arithmetic (`+`, `-`, `*`, `/`), comparison (`==`, `<`, ...),
 boolean (`&&`, `||`, `and`, `or`, `not`), and other operators (`<>`, `++`,
-`in`, `|>`, `..`). Macros nested *inside* operands are still expanded:
+`in`, `|>`, `..`). Macros nested *inside* operands are still expanded either
+way:
 
 ```elixir
-{:ok, expanded} = ExPanda.expand_string("x + unless(true, do: 1)")
+{:ok, expanded} = ExPanda.expand_string("x + unless(true, do: 1)", expand_operators: false)
 # => {:+, _, [x, {:case, _, _}]}
 ```
+
+The option is accepted by `expand_string/2`, `expand_file/2`, `expand/2`,
+`expand/3`, `expand_to_string/2` and `ExPanda.Walker.walk/3`.
 
 ## Capture Operator
 

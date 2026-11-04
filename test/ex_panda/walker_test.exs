@@ -36,9 +36,15 @@ defmodule ExPanda.WalkerTest do
       assert {:case, _, [true, [do: _]]} = expanded
     end
 
-    test "preserves pipe operator" do
+    test "expands pipe operator by default" do
       {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
       {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      assert {{:., _, [String.Chars, :to_string]}, _, [1]} = expanded
+    end
+
+    test "preserves pipe operator with expand_operators: false" do
+      {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
       assert {:|>, _, [1, _call]} = expanded
     end
   end
@@ -47,7 +53,7 @@ defmodule ExPanda.WalkerTest do
     test "preserves arithmetic operators instead of lowering to :erlang BIFs" do
       for src <- ["1 + 2", "a - b", "a * b", "a / b"] do
         {:ok, ast} = Code.string_to_quoted(src)
-        {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+        {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
 
         assert {op, _, [_, _]} = expanded
         assert op in [:+, :-, :*, :/]
@@ -68,7 +74,7 @@ defmodule ExPanda.WalkerTest do
 
       for {src, expected_op} <- cases do
         {:ok, ast} = Code.string_to_quoted(src)
-        {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+        {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
         assert {^expected_op, _, [_, _]} = expanded
       end
     end
@@ -76,7 +82,7 @@ defmodule ExPanda.WalkerTest do
     test "preserves comparison operators" do
       for src <- ["a == b", "a != b", "a === b", "a < b", "a > b", "a <= b", "a >= b"] do
         {:ok, ast} = Code.string_to_quoted(src)
-        {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+        {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
         assert {op, _, [_, _]} = expanded
         assert op in [:==, :!=, :===, :<, :>, :<=, :>=]
       end
@@ -84,19 +90,70 @@ defmodule ExPanda.WalkerTest do
 
     test "preserves unary operators" do
       {:ok, ast} = Code.string_to_quoted("not a")
-      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
       assert {:not, _, [_]} = expanded
 
       {:ok, ast} = Code.string_to_quoted("-a")
-      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
       assert {:-, _, [_]} = expanded
     end
 
     test "still expands macros nested inside operator operands" do
       {:ok, ast} = Code.string_to_quoted("x + unless(true, do: 1)")
-      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
 
       assert {:+, _, [_, {:case, _, _}]} = expanded
+    end
+  end
+
+  describe "expand_operators option" do
+    test "defaults to true (backward compatible)" do
+      {:ok, ast} = Code.string_to_quoted("1 + 2")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env())
+
+      assert {{:., _, [:erlang, :+]}, _, [1, 2]} = expanded
+    end
+
+    test "explicit true matches the default" do
+      {:ok, ast} = Code.string_to_quoted("1 + 2")
+      {default, _} = Walker.walk(ast, EnvManager.new_env())
+      {explicit, _} = Walker.walk(ast, EnvManager.new_env(), expand_operators: true)
+
+      assert default == explicit
+    end
+
+    test "false preserves operators" do
+      {:ok, ast} = Code.string_to_quoted("1 + 2")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
+
+      assert {:+, _, [1, 2]} = expanded
+    end
+
+    test "false still expands macros nested in operands" do
+      {:ok, ast} = Code.string_to_quoted("x + unless(true, do: 1)")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
+
+      assert {:+, _, [_, {:case, _, _}]} = expanded
+    end
+
+    test "false does not affect non-operator macro expansion" do
+      {:ok, ast} = Code.string_to_quoted("unless true, do: :never")
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
+
+      assert {:case, _, _} = expanded
+    end
+
+    test "the option survives nested constructs" do
+      src = """
+      defmodule Foo do
+        def bar(x), do: x + 1
+      end
+      """
+
+      {:ok, ast} = Code.string_to_quoted(src)
+      {expanded, _env} = Walker.walk(ast, EnvManager.new_env(), expand_operators: false)
+
+      assert {:defmodule, _, [_, [do: {:def, _, [_, [do: {:+, _, [_, 1]}]]}]]} = expanded
     end
   end
 

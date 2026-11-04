@@ -72,11 +72,18 @@ defmodule ExPanda do
       Defaults to `"nofile"`.
     * `:preserve_lines` - Whether to preserve line/column metadata in parsed AST.
       Defaults to `true`.
+    * `:expand_operators` - Whether to expand operators like any other macro
+      or special form. Defaults to `true`. When `false`, operators are kept
+      verbatim and only their operands are expanded.
 
   ## Examples
 
       iex> {:ok, expanded} = ExPanda.expand_string("unless true, do: :never")
       iex> match?({:case, _, _}, expanded)
+      true
+
+      iex> {:ok, expanded} = ExPanda.expand_string("1 + 2", expand_operators: false)
+      iex> match?({:+, _, [1, 2]}, expanded)
       true
   """
   @spec expand_string(String.t(), keyword()) :: {:ok, Macro.t()} | {:error, term()}
@@ -129,17 +136,23 @@ defmodule ExPanda do
 
     * `:env` - Custom `Macro.Env` to use as the base environment.
     * `:file` - File path to set in the environment.
+    * `:expand_operators` - Whether to expand operators. Defaults to `true`.
 
   ## Examples
 
       iex> {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
       iex> {:ok, expanded} = ExPanda.expand(ast)
-      iex> match?({:|>, _, [1, _]}, expanded)
+      iex> match?({{:., _, [String.Chars, :to_string]}, _, [1]}, expanded)
+      true
+
+      iex> {:ok, ast} = Code.string_to_quoted("1 + 2")
+      iex> {:ok, expanded} = ExPanda.expand(ast, expand_operators: false)
+      iex> match?({:+, _, [1, 2]}, expanded)
       true
   """
   @spec expand(Macro.t(), keyword()) :: {:ok, Macro.t()} | {:error, term()}
   def expand(ast, opts \\ []) do
-    {expanded, _env} = Walker.walk(ast, build_env(opts))
+    {expanded, _env} = Walker.walk(ast, build_env(opts), opts)
     {:ok, expanded}
   rescue
     e -> {:error, "Expansion failed: #{Exception.message(e)}"}
@@ -160,8 +173,8 @@ defmodule ExPanda do
   """
   @spec expand(Macro.t(), Macro.Env.t(), keyword()) ::
           {:ok, Macro.t(), Macro.Env.t()} | {:error, term()}
-  def expand(ast, %Macro.Env{} = env, _opts) do
-    {expanded, final_env} = Walker.walk(ast, env)
+  def expand(ast, %Macro.Env{} = env, opts) do
+    {expanded, final_env} = Walker.walk(ast, env, opts)
     {:ok, expanded, final_env}
   rescue
     e -> {:error, "Expansion failed: #{Exception.message(e)}"}
@@ -191,6 +204,10 @@ defmodule ExPanda do
 
       iex> {:ok, ast} = Code.string_to_quoted("1 |> to_string()")
       iex> {:ok, code} = ExPanda.expand_to_string(ast)
+      iex> code =~ "String.Chars.to_string"
+      true
+
+      iex> {:ok, code} = ExPanda.expand_to_string("1 |> to_string()", expand_operators: false)
       iex> code =~ "|>"
       true
   """
