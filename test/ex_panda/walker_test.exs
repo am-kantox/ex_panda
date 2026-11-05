@@ -286,4 +286,77 @@ defmodule ExPanda.WalkerTest do
       assert {:def, _, [{:bar, _, _}, [do: {:__block__, _, _stmts}]]} = def_node
     end
   end
+
+  describe "with/for body options" do
+    # Regression: the body options were spliced into the positional argument
+    # list (`clauses ++ opts`) instead of being appended as a single keyword-list
+    # element (`clauses ++ [opts]`). That produced `with x <- y, {:do, z}` -- AST
+    # which is not valid Elixir and which `Macro.to_string/1` cannot even print,
+    # so any consumer walking the expanded tree crashed.
+    defp body_opts_are_grouped?(expanded, form) do
+      {^form, _, args} = expanded
+      is_list(List.last(args))
+    end
+
+    test "inline `with ..., do: x` keeps the body as a keyword list" do
+      {:ok, expanded} = ExPanda.expand_string("with {:ok, a} <- x, do: a")
+
+      assert body_opts_are_grouped?(expanded, :with)
+      assert is_binary(Macro.to_string(expanded))
+    end
+
+    test "block `with` keeps the body as a keyword list" do
+      {:ok, expanded} =
+        ExPanda.expand_string("""
+        with {:ok, a} <- x do
+          a
+        end
+        """)
+
+      assert body_opts_are_grouped?(expanded, :with)
+      assert is_binary(Macro.to_string(expanded))
+    end
+
+    test "`with` with an else branch keeps the body as a keyword list" do
+      {:ok, expanded} =
+        ExPanda.expand_string("""
+        with {:ok, a} <- x do
+          a
+        else
+          _ -> :error
+        end
+        """)
+
+      assert body_opts_are_grouped?(expanded, :with)
+      assert is_binary(Macro.to_string(expanded))
+    end
+
+    test "`for ..., do: x` keeps the body as a keyword list" do
+      {:ok, expanded} = ExPanda.expand_string("for v <- list, do: v")
+
+      assert body_opts_are_grouped?(expanded, :for)
+      assert is_binary(Macro.to_string(expanded))
+    end
+
+    test "`for ..., into: %{}, do: x` keeps the body as a keyword list" do
+      {:ok, expanded} = ExPanda.expand_string("for v <- list, into: %{}, do: {v, v}")
+
+      assert body_opts_are_grouped?(expanded, :for)
+      assert is_binary(Macro.to_string(expanded))
+    end
+
+    test "`with` inside a def keeps the body as a keyword list" do
+      {:ok, expanded} =
+        ExPanda.expand_string("""
+        defmodule M do
+          def f(x) do
+            with {:ok, a} <- x, do: a
+          end
+        end
+        """)
+
+      assert is_binary(Macro.to_string(expanded))
+      assert Macro.to_string(expanded) =~ "with"
+    end
+  end
 end
